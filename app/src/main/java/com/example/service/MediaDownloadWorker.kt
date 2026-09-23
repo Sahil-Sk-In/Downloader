@@ -97,9 +97,32 @@ class MediaDownloadWorker(
         }
     }
 
+    override suspend fun getForegroundInfo(): ForegroundInfo {
+        createNotificationChannel()
+        val downloadId = inputData.getString(KEY_DOWNLOAD_ID) ?: "default"
+        val initialTitle = inputData.getString(KEY_TITLE) ?: "Media Download"
+        val notificationId = NOTIFICATION_ID_BASE + (downloadId.hashCode() and 0x7FFF)
+
+        val notification = buildProgressNotification(
+            notificationId = notificationId,
+            title = initialTitle,
+            message = "Preparing download...",
+            progress = 0f,
+            indeterminate = true,
+            downloadId = downloadId
+        )
+
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            ForegroundInfo(notificationId, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+        } else {
+            ForegroundInfo(notificationId, notification)
+        }
+    }
+
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         val downloadId = inputData.getString(KEY_DOWNLOAD_ID) ?: return@withContext Result.failure()
-        val url = inputData.getString(KEY_URL) ?: return@withContext Result.failure()
+        val rawUrl = inputData.getString(KEY_URL) ?: return@withContext Result.failure()
+        val normalizedUrl = DownloadManagerHelper.normalizeUrlOrSearch(rawUrl)
         val initialTitle = inputData.getString(KEY_TITLE) ?: "Media Download"
         val formatId = inputData.getString(KEY_FORMAT_ID) ?: DownloadFormat.VIDEO_BEST.formatId
 
@@ -108,24 +131,8 @@ class MediaDownloadWorker(
 
         createNotificationChannel()
 
-        // Establish foreground service
-        val initialNotification = buildProgressNotification(
-            notificationId = notificationId,
-            title = initialTitle,
-            message = "Initializing engine...",
-            progress = 0f,
-            indeterminate = true,
-            downloadId = downloadId
-        )
-
-        val foregroundInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            ForegroundInfo(notificationId, initialNotification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
-        } else {
-            ForegroundInfo(notificationId, initialNotification)
-        }
-
         try {
-            setForeground(foregroundInfo)
+            setForeground(getForegroundInfo())
         } catch (e: Exception) {
             Log.w(TAG, "Could not set foreground service info: ${e.message}")
         }
@@ -139,11 +146,13 @@ class MediaDownloadWorker(
         val destinationDir = DownloadManagerHelper.getStorageDirectory(format.isAudioOnly, context)
         val outputTemplate = "${destinationDir.absolutePath}/%(title).80B-%(id)s.%(ext)s"
 
-        val request = YoutubeDLRequest(url).apply {
+        val request = YoutubeDLRequest(normalizedUrl).apply {
             addOption("-o", outputTemplate)
             addOption("-f", format.ytDlpFormatSpec)
             addOption("--no-mtime")
             addOption("--no-playlist")
+            addOption("--no-update")
+            addOption("--no-warnings")
             addOption("--socket-timeout", "30")
             addOption("--retries", "5")
             addOption("--fragment-retries", "5")
@@ -214,7 +223,8 @@ class MediaDownloadWorker(
             Result.success(workDataOf("filePath" to finalPath))
         } catch (e: Exception) {
             Log.e(TAG, "Worker execution failed for $downloadId: ${e.message}", e)
-            val errorMsg = e.message ?: "Download encountered an error"
+            val rawErrorMsg = e.message ?: "Download encountered an error"
+            val errorMsg = DownloadManagerHelper.cleanErrorMessage(rawErrorMsg)
             val isCancelled = isStopped || errorMsg.contains("cancel", ignoreCase = true)
             downloadDao.updateStatus(
                 id = downloadId,

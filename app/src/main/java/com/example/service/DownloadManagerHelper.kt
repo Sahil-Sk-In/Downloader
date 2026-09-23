@@ -16,7 +16,6 @@ object DownloadManagerHelper {
         val appContext = context.applicationContext
         val subFolder = if (isAudio) "Music/MediaVault" else "Movies/MediaVault"
 
-        // 1. Try primary external files dir (Scoped storage safe on Android 10-15 without permission blocks)
         val externalFiles = if (isAudio) {
             appContext.getExternalFilesDir(Environment.DIRECTORY_MUSIC)
         } else {
@@ -26,7 +25,6 @@ object DownloadManagerHelper {
         val targetDir = if (externalFiles != null) {
             File(externalFiles, "MediaVault")
         } else {
-            // Fallback to internal storage
             File(appContext.filesDir, subFolder)
         }
 
@@ -51,9 +49,37 @@ object DownloadManagerHelper {
         }
     }
 
+    fun normalizeUrlOrSearch(input: String): String {
+        val trimmed = input.trim()
+        if (trimmed.startsWith("http://", ignoreCase = true) || trimmed.startsWith("https://", ignoreCase = true)) {
+            return trimmed
+        }
+        if (trimmed.startsWith("ytsearch", ignoreCase = true)) {
+            return trimmed
+        }
+        // If it's a search term or song/video title (e.g. "arjit singh song"), convert to YouTube search
+        return "ytsearch1:$trimmed"
+    }
+
+    fun cleanErrorMessage(raw: String?): String {
+        if (raw.isNullOrBlank()) return "Unknown error occurred"
+        return raw.lineSequence()
+            .filter { line ->
+                !line.contains("WARNING: Your yt-dlp version", ignoreCase = true) &&
+                !line.contains("older than 90 days", ignoreCase = true) &&
+                !line.contains("strongly recommended", ignoreCase = true) &&
+                !line.contains("Run \"yt-dlp", ignoreCase = true) &&
+                !line.contains("To suppress this warning", ignoreCase = true)
+            }
+            .joinToString("\n")
+            .trim()
+            .ifBlank { raw.trim() }
+    }
+
     fun detectPlatform(url: String): String {
         val lower = url.lowercase(Locale.getDefault())
         return when {
+            lower.startsWith("ytsearch") -> "YouTube Search"
             lower.contains("youtube.com") || lower.contains("youtu.be") -> "YouTube"
             lower.contains("instagram.com") -> "Instagram"
             lower.contains("tiktok.com") -> "TikTok"

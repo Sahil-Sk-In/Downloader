@@ -216,7 +216,7 @@ fun HomeScreen(
                         .padding(16.dp)
                 ) {
                     Text(
-                        text = "Paste Video / Audio Link",
+                        text = "Paste Link or Search Song/Video",
                         color = TextPrimary,
                         fontSize = 15.sp,
                         fontWeight = FontWeight.SemiBold
@@ -231,7 +231,7 @@ fun HomeScreen(
                             .fillMaxWidth()
                             .testTag("url_input_field"),
                         placeholder = {
-                            Text("https://www.youtube.com/watch?v=...", color = TextMuted, fontSize = 13.sp)
+                            Text("https://... or 'Arijit Singh song'", color = TextMuted, fontSize = 13.sp)
                         },
                         leadingIcon = {
                             Icon(Icons.Default.Link, contentDescription = "Link", tint = NeonCyan)

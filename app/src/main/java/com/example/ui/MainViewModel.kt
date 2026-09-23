@@ -13,10 +13,12 @@ import com.example.App
 import com.example.data.AppDatabase
 import com.example.data.DownloadFormat
 import com.example.data.DownloadItem
+import com.example.data.DownloadRepository
 import com.example.data.DownloadStatus
 import com.example.service.DownloadManagerHelper
 import com.example.service.MediaDownloadWorker
 import com.yausername.youtubedl_android.YoutubeDL
+import com.yausername.youtubedl_android.YoutubeDLRequest
 import com.yausername.youtubedl_android.mapper.VideoInfo
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -49,7 +51,7 @@ enum class HistoryFilter {
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val database = AppDatabase.getDatabase(application)
-    private val downloadDao = database.downloadDao()
+    private val repository = DownloadRepository(database.downloadDao())
 
     private val _currentTab = MutableStateFlow(NavTab.HOME)
     val currentTab: StateFlow<NavTab> = _currentTab.asStateFlow()
@@ -87,13 +89,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _isUpdatingEngine = MutableStateFlow(false)
     val isUpdatingEngine: StateFlow<Boolean> = _isUpdatingEngine.asStateFlow()
 
-    val allDownloads: StateFlow<List<DownloadItem>> = downloadDao.getAllDownloads()
+    val allDownloads: StateFlow<List<DownloadItem>> = repository.allDownloads
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    val activeDownloads: StateFlow<List<DownloadItem>> = downloadDao.getActiveDownloads()
+    val activeDownloads: StateFlow<List<DownloadItem>> = repository.activeDownloads
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    val rawCompletedDownloads: StateFlow<List<DownloadItem>> = downloadDao.getCompletedDownloads()
+    val rawCompletedDownloads: StateFlow<List<DownloadItem>> = repository.completedDownloads
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val filteredCompletedDownloads: StateFlow<List<DownloadItem>> = combine(
@@ -228,7 +230,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun fetchMetadataAndShowSheet(url: String) {
+    fun fetchMetadataAndShowSheet(input: String) {
+        val normalized = DownloadManagerHelper.normalizeUrlOrSearch(input)
         _showFormatSheet.value = true
         _isAnalyzing.value = true
         _analyzedInfo.value = null
@@ -236,7 +239,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 if (App.ensureEngineReady(getApplication())) {
-                    val info = YoutubeDL.getInstance().getInfo(url)
+                    val request = YoutubeDLRequest(normalized).apply {
+                        addOption("--no-update")
+                        addOption("--no-warnings")
+                        addOption("--socket-timeout", "20")
+                    }
+                    val info = YoutubeDL.getInstance().getInfo(request)
                     _analyzedInfo.value = info
                 }
             } catch (e: Exception) {
@@ -248,23 +256,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun startDownload(context: Context, format: DownloadFormat) {
-        val url = _urlInput.value.trim()
-        if (url.isBlank()) {
-            emitSnackbar("Please enter a media URL")
+        val rawInput = _urlInput.value.trim()
+        if (rawInput.isBlank()) {
+            emitSnackbar("Please enter a media URL or search name")
             return
         }
 
+        val normalizedUrl = DownloadManagerHelper.normalizeUrlOrSearch(rawInput)
         val downloadId = UUID.randomUUID().toString()
         val info = _analyzedInfo.value
-        val title = info?.title?.takeIf { it.isNotBlank() } ?: "Media_${System.currentTimeMillis() % 100000}"
+        val title = info?.title?.takeIf { it.isNotBlank() } ?: if (rawInput.startsWith("http", ignoreCase = true)) "Media_${System.currentTimeMillis() % 100000}" else rawInput
         val uploader = info?.uploader ?: ""
         val duration = info?.duration?.toLong() ?: 0L
         val thumbnail = info?.thumbnail ?: ""
-        val platform = DownloadManagerHelper.detectPlatform(url)
+        val platform = DownloadManagerHelper.detectPlatform(normalizedUrl)
 
         val item = DownloadItem(
             id = downloadId,
-            url = url,
+            url = normalizedUrl,
             title = title,
             uploader = uploader,
             durationSeconds = duration,
@@ -278,8 +287,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         )
 
         viewModelScope.launch(Dispatchers.IO) {
-            downloadDao.insertOrUpdate(item)
-            MediaDownloadWorker.enqueueDownload(context, downloadId, url, title, format.formatId)
+            repository.insertOrUpdate(item)
+            MediaDownloadWorker.enqueueDownload(context, downloadId, normalizedUrl, title, format.formatId)
             _showFormatSheet.value = false
             _urlInput.value = ""
             _analyzedInfo.value = null
@@ -295,7 +304,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 progressPercent = 0f,
                 errorMessage = null
             )
-            downloadDao.insertOrUpdate(updated)
+            repository.insertOrUpdate(updated)
             MediaDownloadWorker.enqueueDownload(context, item.id, item.url, item.title, item.formatId)
             emitSnackbar("Retrying: ${item.title}")
         }
@@ -318,14 +327,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     Log.e("MainViewModel", "Error deleting local file: ${e.message}")
                 }
             }
-            downloadDao.delete(item)
+            repository.delete(item)
             emitSnackbar("Removed: ${item.title}")
         }
     }
 
     fun clearCompletedHistory() {
         viewModelScope.launch(Dispatchers.IO) {
-            downloadDao.clearCompleted()
+            repository.clearCompleted()
             emitSnackbar("Cleared completed history")
         }
     }
