@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <external-path name="external_files" path="." />
+    <external-path name="movies" path="Movies" />
+    <external-path name="music" path="Music" />
+    <external-path name="download" path="Download" />
+    <files-path name="internal_files" path="." />
+    <cache-path name="internal_cache" path="." />
+</paths>

@@ -1,0 +1,6 @@
+{
+  "name": "MediaVault",
+  "description": "Native Instant Video & Audio Downloader powered by yt-dlp and FFmpeg with background service",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
