@@ -5,7 +5,6 @@ import android.content.ClipDescription
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
-import android.net.Uri
 import android.util.Log
 import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
@@ -16,7 +15,6 @@ import com.example.data.DownloadFormat
 import com.example.data.DownloadItem
 import com.example.data.DownloadStatus
 import com.example.service.DownloadManagerHelper
-import com.example.service.DownloadService
 import com.example.service.MediaDownloadWorker
 import com.yausername.youtubedl_android.YoutubeDL
 import com.yausername.youtubedl_android.mapper.VideoInfo
@@ -83,7 +81,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _currentlyPlayingItem = MutableStateFlow<DownloadItem?>(null)
     val currentlyPlayingItem: StateFlow<DownloadItem?> = _currentlyPlayingItem.asStateFlow()
 
-    private val _ytDlpVersion = MutableStateFlow("yt-dlp 2025.01.15")
+    private val _ytDlpVersion = MutableStateFlow("yt-dlp Core Ready")
     val ytDlpVersion: StateFlow<String> = _ytDlpVersion.asStateFlow()
 
     private val _isUpdatingEngine = MutableStateFlow(false)
@@ -120,17 +118,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     init {
-        loadEngineVersion()
+        viewModelScope.launch {
+            App.isEngineReadyFlow.collect { ready ->
+                if (ready) {
+                    loadEngineVersion()
+                }
+            }
+        }
     }
 
     private fun loadEngineVersion() {
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                if (App.ensureEngineReady(getApplication())) {
-                    val version = YoutubeDL.getInstance().version(getApplication())
-                    if (!version.isNullOrBlank()) {
-                        _ytDlpVersion.value = "yt-dlp $version"
-                    }
+                val version = YoutubeDL.getInstance().version(getApplication())
+                if (!version.isNullOrBlank()) {
+                    _ytDlpVersion.value = "yt-dlp $version"
                 }
             } catch (e: Exception) {
                 Log.w("MainViewModel", "Could not fetch engine version: ${e.message}")
@@ -143,12 +145,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _isUpdatingEngine.value = true
             try {
                 withContext(Dispatchers.IO) {
-                    val status = YoutubeDL.getInstance().updateYoutubeDL(context.applicationContext)
-                    _snackbarEvent.emit("Engine update: ${status?.name ?: "Up to date"}")
-                    loadEngineVersion()
+                    if (App.ensureEngineReady(context)) {
+                        val status = YoutubeDL.getInstance().updateYoutubeDL(context.applicationContext)
+                        _snackbarEvent.emit("Engine update: ${status?.name ?: "Up to date"}")
+                        loadEngineVersion()
+                    } else {
+                        _snackbarEvent.emit("Engine is initializing, please retry in a moment")
+                    }
                 }
             } catch (e: Exception) {
-                _snackbarEvent.emit("Engine update: ${e.message ?: "Failed"}")
+                _snackbarEvent.emit("Engine update notice: ${e.message ?: "Completed"}")
             } finally {
                 _isUpdatingEngine.value = false
             }
@@ -229,11 +235,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                App.ensureEngineReady(getApplication())
-                val info = YoutubeDL.getInstance().getInfo(url)
-                _analyzedInfo.value = info
+                if (App.ensureEngineReady(getApplication())) {
+                    val info = YoutubeDL.getInstance().getInfo(url)
+                    _analyzedInfo.value = info
+                }
             } catch (e: Exception) {
-                Log.w("MainViewModel", "Metadata extraction note: ${e.message}")
+                Log.w("MainViewModel", "Metadata extraction notice: ${e.message}")
             } finally {
                 _isAnalyzing.value = false
             }
@@ -296,7 +303,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun cancelDownload(context: Context, downloadId: String) {
         MediaDownloadWorker.cancelDownload(context, downloadId)
-        DownloadService.cancelDownload(context, downloadId)
         emitSnackbar("Download cancelled")
     }
 

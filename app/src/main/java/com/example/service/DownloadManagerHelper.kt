@@ -12,25 +12,28 @@ object DownloadManagerHelper {
 
     private const val TAG = "DownloadHelper"
 
-    fun getStorageDirectory(isAudio: Boolean, context: Context? = null): File {
-        val targetDir = if (isAudio) {
-            val musicPublic = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC)
-            File(musicPublic, "MediaVault")
+    fun getStorageDirectory(isAudio: Boolean, context: Context): File {
+        val appContext = context.applicationContext
+        val subFolder = if (isAudio) "Music/MediaVault" else "Movies/MediaVault"
+
+        // 1. Try primary external files dir (Scoped storage safe on Android 10-15 without permission blocks)
+        val externalFiles = if (isAudio) {
+            appContext.getExternalFilesDir(Environment.DIRECTORY_MUSIC)
         } else {
-            val moviesPublic = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES)
-            File(moviesPublic, "MediaVault")
+            appContext.getExternalFilesDir(Environment.DIRECTORY_MOVIES)
+        }
+
+        val targetDir = if (externalFiles != null) {
+            File(externalFiles, "MediaVault")
+        } else {
+            // Fallback to internal storage
+            File(appContext.filesDir, subFolder)
         }
 
         if (!targetDir.exists()) {
-            val created = targetDir.mkdirs()
-            if (!created && context != null) {
-                val fallbackType = if (isAudio) Environment.DIRECTORY_MUSIC else Environment.DIRECTORY_MOVIES
-                val fallback = context.getExternalFilesDir(fallbackType) ?: context.filesDir
-                val fallbackVault = File(fallback, "MediaVault")
-                fallbackVault.mkdirs()
-                return fallbackVault
-            }
+            targetDir.mkdirs()
         }
+
         return targetDir
     }
 

@@ -12,13 +12,11 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
-import androidx.work.Data
 import androidx.work.ExistingWorkPolicy
 import androidx.work.ForegroundInfo
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.OutOfQuotaPolicy
-import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
@@ -29,7 +27,10 @@ import com.example.data.DownloadFormat
 import com.example.data.DownloadStatus
 import com.yausername.youtubedl_android.YoutubeDL
 import com.yausername.youtubedl_android.YoutubeDLRequest
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 
@@ -41,6 +42,7 @@ class MediaDownloadWorker(
     private val database = AppDatabase.getDatabase(context)
     private val downloadDao = database.downloadDao()
     private val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+    private val workerScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     companion object {
         private const val TAG = "MediaDownloadWorker"
@@ -50,7 +52,7 @@ class MediaDownloadWorker(
         const val KEY_FORMAT_ID = "key_format_id"
 
         const val CHANNEL_ID = "media_vault_work_channel"
-        const val CHANNEL_NAME = "MediaVault Work Tasks"
+        const val CHANNEL_NAME = "MediaVault Download Tasks"
         const val NOTIFICATION_ID_BASE = 10000
 
         fun enqueueDownload(
@@ -102,11 +104,11 @@ class MediaDownloadWorker(
         val formatId = inputData.getString(KEY_FORMAT_ID) ?: DownloadFormat.VIDEO_BEST.formatId
 
         val format = DownloadFormat.fromId(formatId)
-        val notificationId = NOTIFICATION_ID_BASE + (downloadId.hashCode() and 0xFFFF)
+        val notificationId = NOTIFICATION_ID_BASE + (downloadId.hashCode() and 0x7FFF)
 
         createNotificationChannel()
 
-        // Establish foreground service via WorkManager
+        // Establish foreground service
         val initialNotification = buildProgressNotification(
             notificationId = notificationId,
             title = initialTitle,
@@ -125,17 +127,17 @@ class MediaDownloadWorker(
         try {
             setForeground(foregroundInfo)
         } catch (e: Exception) {
-            Log.w(TAG, "Could not set foreground service: ${e.message}")
+            Log.w(TAG, "Could not set foreground service info: ${e.message}")
         }
 
         if (!App.ensureEngineReady(context)) {
-            val err = App.initError ?: "Native yt-dlp core failed to load"
+            val err = App.initError ?: "Native engine failed to load"
             downloadDao.updateStatus(downloadId, DownloadStatus.FAILED, err)
             return@withContext Result.failure(workDataOf("error" to err))
         }
 
         val destinationDir = DownloadManagerHelper.getStorageDirectory(format.isAudioOnly, context)
-        val outputTemplate = "${destinationDir.absolutePath}/%(title).100B-%(id)s.%(ext)s"
+        val outputTemplate = "${destinationDir.absolutePath}/%(title).80B-%(id)s.%(ext)s"
 
         val request = YoutubeDLRequest(url).apply {
             addOption("-o", outputTemplate)
@@ -143,8 +145,8 @@ class MediaDownloadWorker(
             addOption("--no-mtime")
             addOption("--no-playlist")
             addOption("--socket-timeout", "30")
-            addOption("--retries", "10")
-            addOption("--fragment-retries", "10")
+            addOption("--retries", "5")
+            addOption("--fragment-retries", "5")
 
             for (arg in format.extraArgs) {
                 addOption(arg)
@@ -158,33 +160,41 @@ class MediaDownloadWorker(
 
             YoutubeDL.getInstance().execute(request, downloadId) { progress, etaInSeconds, line ->
                 val now = System.currentTimeMillis()
-                if (now - lastProgressUpdate > 400) {
+                if (now - lastProgressUpdate > 500L) {
                     lastProgressUpdate = now
                     val progressFloat = progress.coerceIn(0f, 100f)
                     val etaStr = if (etaInSeconds > 0) "${etaInSeconds}s" else ""
                     val speedStr = parseSpeedFromLine(line)
 
-                    kotlinx.coroutines.runBlocking {
-                        downloadDao.updateProgress(
-                            id = downloadId,
-                            progress = progressFloat,
-                            speed = speedStr,
-                            eta = etaStr,
-                            downloadedBytes = 0L,
-                            totalBytes = 0L,
-                            status = if (progressFloat >= 99f) DownloadStatus.PROCESSING else DownloadStatus.DOWNLOADING
-                        )
+                    workerScope.launch {
+                        try {
+                            downloadDao.updateProgress(
+                                id = downloadId,
+                                progress = progressFloat,
+                                speed = speedStr,
+                                eta = etaStr,
+                                downloadedBytes = 0L,
+                                totalBytes = 0L,
+                                status = if (progressFloat >= 99f) DownloadStatus.PROCESSING else DownloadStatus.DOWNLOADING
+                            )
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Progress update error: ${e.message}")
+                        }
                     }
 
-                    val updatedNotif = buildProgressNotification(
-                        notificationId = notificationId,
-                        title = initialTitle,
-                        message = "${progressFloat.toInt()}% • $speedStr",
-                        progress = progressFloat,
-                        indeterminate = false,
-                        downloadId = downloadId
-                    )
-                    notificationManager.notify(notificationId, updatedNotif)
+                    try {
+                        val updatedNotif = buildProgressNotification(
+                            notificationId = notificationId,
+                            title = initialTitle,
+                            message = "${progressFloat.toInt()}% • $speedStr",
+                            progress = progressFloat,
+                            indeterminate = false,
+                            downloadId = downloadId
+                        )
+                        notificationManager.notify(notificationId, updatedNotif)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Notification error: ${e.message}")
+                    }
                 }
             }
 
@@ -204,7 +214,7 @@ class MediaDownloadWorker(
             Result.success(workDataOf("filePath" to finalPath))
         } catch (e: Exception) {
             Log.e(TAG, "Worker execution failed for $downloadId: ${e.message}", e)
-            val errorMsg = e.message ?: "Task error"
+            val errorMsg = e.message ?: "Download encountered an error"
             val isCancelled = isStopped || errorMsg.contains("cancel", ignoreCase = true)
             downloadDao.updateStatus(
                 id = downloadId,
@@ -217,7 +227,9 @@ class MediaDownloadWorker(
                 Result.failure(workDataOf("error" to errorMsg))
             }
         } finally {
-            notificationManager.cancel(notificationId)
+            try {
+                notificationManager.cancel(notificationId)
+            } catch (_: Exception) {}
         }
     }
 
